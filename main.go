@@ -91,7 +91,7 @@ func transmit(worker int, outputChan chan string, target string) {
 	}
 }
 
-func receive(addr string, port int, target string, connections int, statsInterval time.Duration) {
+func receive(addr string, port int, target string, connections int) {
 	outputChan := make(chan string, connections)
 	for i := 0; i < connections; i++ {
 		go transmit(i+1, outputChan, target)
@@ -104,12 +104,10 @@ func main() {
 	var addr string
 	var target string
 	var connections int
-	var interval time.Duration
 	flag.StringVar(&addr, "addr", "0.0.0.0", "Address to listen on")
 	flag.IntVar(&port, "port", 9000, "Port to listen on")
 	flag.StringVar(&target, "target", "127.0.0.1:9999", "Address to proxy to")
 	flag.IntVar(&connections, "connections", 16, "Number of outbound connections to make")
-	flag.DurationVar(&interval, "interval", time.Second, "Interval between stats")
 	flag.Parse()
-	receive(addr, port, target, connections, interval)
+	receive(addr, port, target, connections)
 }
