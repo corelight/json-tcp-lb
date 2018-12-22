@@ -26,13 +26,14 @@ func listen(addr string, port int, out chan string) {
 	}
 }
 
-func connect(target string) net.Conn {
+func connect(target string, worker int) net.Conn {
 	for {
+		log.Printf("Worker %d: Opening connection to %v", worker, target)
 		conn, err := net.DialTimeout("tcp", target, 2*time.Second)
 		if err == nil {
 			return conn
 		}
-		log.Printf("Unable to connect to %s: %v", target, err)
+		log.Printf("Worker %d: Unable to connect to %s: %v", worker, target, err)
 		time.Sleep(2 * time.Second)
 	}
 }
@@ -66,20 +67,24 @@ func handleLog(conn net.Conn, out chan string) {
 	}
 }
 
-func transmit(outputChan chan string, target string) {
-	conn := connect(target)
+func transmit(worker int, outputChan chan string, target string) {
+	var conn net.Conn
+	conn = nil
 	var s string
 	for {
 		s = <-outputChan
 		for {
+			if conn == nil {
+				conn = connect(target, worker)
+			}
 			n, err := conn.Write([]byte(s))
 			if err != nil || n == 0 {
-				log.Printf("Error writing: %v", err)
-				conn = connect(target)
+				log.Printf("Worker %d: Error writing: %v", worker, err)
+				conn = nil
 				continue
 			}
 			if n != len(s) {
-				log.Fatalf("Error writing: %d != %d", n, len(s))
+				log.Fatalf("Worker %d: Error writing: %d != %d", worker, n, len(s))
 			}
 			break
 		}
@@ -88,11 +93,10 @@ func transmit(outputChan chan string, target string) {
 
 func receive(addr string, port int, target string, connections int, statsInterval time.Duration) {
 	outputChan := make(chan string, connections)
-	go listen(addr, port, outputChan)
 	for i := 0; i < connections; i++ {
-		go transmit(outputChan, target)
+		go transmit(i+1, outputChan, target)
 	}
-	select {}
+	listen(addr, port, outputChan)
 }
 
 func main() {
