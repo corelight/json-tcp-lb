@@ -67,13 +67,17 @@ func transmit(outputChan chan string, target string) {
 	var s string
 	for {
 		s = <-outputChan
-		n, err := conn.Write([]byte(s))
-		if err != nil {
-			log.Printf("Error writing: %v", err)
-			conn = connect(target)
-		}
-		if n != len(s) {
-			log.Fatalf("Error writing: %d != %d", n, len(s))
+		for {
+			n, err := conn.Write([]byte(s))
+			if err != nil || n == 0 {
+				log.Printf("Error writing: %v", err)
+				conn = connect(target)
+				continue
+			}
+			if n != len(s) {
+				log.Fatalf("Error writing: %d != %d", n, len(s))
+			}
+			break
 		}
 	}
 }
