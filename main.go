@@ -53,9 +53,9 @@ func handleLog(conn net.Conn, out chan string) {
 		lastNewlineIndex := bytes.LastIndexByte(buf[:n], byte('\n'))
 		//Newline, truncate and send
 		if lastNewlineIndex != -1 {
-			stringbuf += string(buf[:lastNewlineIndex])
-			out <- string(stringbuf)
-			stringbuf = string(buf[lastNewlineIndex:])
+			stringbuf += string(buf[:lastNewlineIndex+1])
+			out <- stringbuf
+			stringbuf = string(buf[lastNewlineIndex+1:])
 		} else {
 			stringbuf += string(buf[:n])
 		}
