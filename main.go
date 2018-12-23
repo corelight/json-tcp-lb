@@ -6,10 +6,22 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
+	"sync"
 	"time"
 )
 
-func listen(addr string, port int, out chan string) {
+const bufferSize int = 16384
+
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		buf := new(bytes.Buffer)
+		buf.Grow(bufferSize * 2)
+		return buf
+	},
+}
+
+func listen(addr string, port int, out chan *bytes.Buffer) {
 	bind := fmt.Sprintf("%s:%d", addr, port)
 	log.Printf("Listening on %s", bind)
 	l, err := net.Listen("tcp", bind)
@@ -26,24 +38,13 @@ func listen(addr string, port int, out chan string) {
 	}
 }
 
-func connect(target string, worker int) net.Conn {
-	for {
-		log.Printf("Worker %d: Opening connection to %v", worker, target)
-		conn, err := net.DialTimeout("tcp", target, 2*time.Second)
-		if err == nil {
-			return conn
-		}
-		log.Printf("Worker %d: Unable to connect to %s: %v", worker, target, err)
-		time.Sleep(2 * time.Second)
-	}
-}
-
-func handleLog(conn net.Conn, out chan string) {
+func handleLog(conn net.Conn, out chan *bytes.Buffer) {
 	log.Printf("New connection from %s", conn.RemoteAddr())
 	defer conn.Close()
 
-	buf := make([]byte, 4096)
-	var stringbuf string
+	buf := make([]byte, bufferSize)
+	var stringbuf *bytes.Buffer
+	stringbuf = bufPool.Get().(*bytes.Buffer)
 	for {
 		n, err := conn.Read(buf)
 		if err != nil {
@@ -54,47 +55,71 @@ func handleLog(conn net.Conn, out chan string) {
 		lastNewlineIndex := bytes.LastIndexByte(buf[:n], byte('\n'))
 		if lastNewlineIndex != -1 {
 			//Newline, truncate and send
-			stringbuf += string(buf[:lastNewlineIndex+1])
+			stringbuf.Write(buf[:lastNewlineIndex+1])
 			out <- stringbuf
-			stringbuf = string(buf[lastNewlineIndex+1 : n])
+			stringbuf = bufPool.Get().(*bytes.Buffer)
+			stringbuf.Write(buf[lastNewlineIndex+1 : n])
 		} else {
 			//No Newline, append to buffer
-			stringbuf += string(buf[:n])
+			stringbuf.Write(buf[:n])
 		}
 	}
-	if stringbuf != "" {
+	if stringbuf.Len() > 0 {
 		out <- stringbuf
 	}
 }
 
-func transmit(worker int, outputChan chan string, target string) {
-	var conn net.Conn
-	conn = nil
-	var s string
+//connect tries to connect to a target with exponential backoff
+func connect(target string, worker int) net.Conn {
+	delay := 2 * time.Second
 	for {
-		s = <-outputChan
-		for {
-			if conn == nil {
-				conn = connect(target, worker)
-			}
-			n, err := conn.Write([]byte(s))
-			if err != nil || n == 0 {
-				log.Printf("Worker %d: Error writing: %v", worker, err)
-				conn = nil
-				continue
-			}
-			if n != len(s) {
-				log.Fatalf("Worker %d: Error writing: %d != %d", worker, n, len(s))
-			}
-			break
+		//log.Printf("Worker %d: Opening connection to %v", worker, target)
+		conn, err := net.DialTimeout("tcp", target, 5*time.Second)
+		if err == nil {
+			log.Printf("Worker %d: connected to %s", worker, target)
+			return conn
+		}
+		log.Printf("Worker %d: Unable connect to %s: %v", worker, target, err)
+		time.Sleep(delay)
+		delay *= 2
+		if delay > 30*time.Second {
+			delay = 30 * time.Second
 		}
 	}
 }
 
-func receive(addr string, port int, target string, connections int) {
-	outputChan := make(chan string, connections)
-	for i := 0; i < connections; i++ {
-		go transmit(i+1, outputChan, target)
+func transmit(worker int, outputChan chan *bytes.Buffer, target string) {
+	var b *bytes.Buffer
+
+	var conn net.Conn
+	conn = connect(target, worker)
+
+	for {
+		b = <-outputChan
+		n, err := conn.Write(b.Bytes())
+		if err != nil || n == 0 {
+			log.Printf("Worker %d: Error writing: %v. n=%d, len=%d", worker, err, n, b.Len())
+			//requeue this message
+			outputChan <- b
+			//reconnect
+			conn.Close()
+			conn = connect(target, worker)
+			continue
+		}
+		//Message succesfully sent.. but...
+		//Only return small buffers to the pool
+		if b.Cap() <= 1024*1024 {
+			b.Reset()
+			bufPool.Put(b)
+		}
+	}
+}
+
+func receive(addr string, port int, targets []string, connections int) {
+	outputChan := make(chan *bytes.Buffer, connections)
+	for i := 0; i < connections*len(targets); i++ {
+		targetIdx := i % len(targets)
+		go transmit(i+1, outputChan, targets[targetIdx])
 	}
 	listen(addr, port, outputChan)
 }
@@ -106,8 +131,9 @@ func main() {
 	var connections int
 	flag.StringVar(&addr, "addr", "0.0.0.0", "Address to listen on")
 	flag.IntVar(&port, "port", 9000, "Port to listen on")
-	flag.StringVar(&target, "target", "127.0.0.1:9999", "Address to proxy to")
-	flag.IntVar(&connections, "connections", 16, "Number of outbound connections to make")
+	flag.StringVar(&target, "target", "127.0.0.1:9999", "Address to proxy to. separate multiple with comma")
+	flag.IntVar(&connections, "connections", 16, "Number of outbound connections to make to each target")
 	flag.Parse()
-	receive(addr, port, target, connections)
+	targets := strings.Split(target, ",")
+	receive(addr, port, targets, connections)
 }
