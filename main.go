@@ -116,7 +116,7 @@ func transmit(worker int, outputChan chan *bytes.Buffer, target string) {
 }
 
 func receive(addr string, port int, targets []string, connections int) {
-	outputChan := make(chan *bytes.Buffer, connections)
+	outputChan := make(chan *bytes.Buffer, connections*len(targets)*2)
 	for i := 0; i < connections*len(targets); i++ {
 		targetIdx := i % len(targets)
 		go transmit(i+1, outputChan, targets[targetIdx])
