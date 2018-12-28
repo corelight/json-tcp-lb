@@ -132,8 +132,6 @@ func TestProxy(t *testing.T) {
 		}
 		wg.Wait()
 		log.Printf("All spew done")
-		//transmit doesn't currently drain the output buffer when canceled
-		time.Sleep(2 * time.Second)
 		cancel()
 	}()
 
