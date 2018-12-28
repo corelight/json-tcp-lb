@@ -21,18 +21,18 @@ var bufPool = sync.Pool{
 	},
 }
 
-func listen(addr string, port int, out chan *bytes.Buffer) {
+func listen(addr string, port int, out chan *bytes.Buffer) error {
 	bind := fmt.Sprintf("%s:%d", addr, port)
 	log.Printf("Listening on %s", bind)
 	l, err := net.Listen("tcp", bind)
 	if err != nil {
-		log.Fatalf("Error listening: %v", err)
+		return err
 	}
 	defer l.Close()
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			log.Fatalf("Error accepting: %v", err)
+			return err
 		}
 		go handleLog(conn, out)
 	}
@@ -94,8 +94,7 @@ func transmit(worker int, outputChan chan *bytes.Buffer, target string) {
 	var conn net.Conn
 	conn = connect(target, worker)
 
-	for {
-		b = <-outputChan
+	for b = range outputChan {
 		n, err := conn.Write(b.Bytes())
 		if err != nil || n == 0 {
 			log.Printf("Worker %d: Error writing: %v. n=%d, len=%d", worker, err, n, b.Len())
@@ -121,7 +120,10 @@ func receive(addr string, port int, targets []string, connections int) {
 		targetIdx := i % len(targets)
 		go transmit(i+1, outputChan, targets[targetIdx])
 	}
-	listen(addr, port, outputChan)
+	err := listen(addr, port, outputChan)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func main() {
