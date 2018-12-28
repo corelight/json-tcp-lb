@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -21,14 +22,7 @@ var bufPool = sync.Pool{
 	},
 }
 
-func listen(addr string, port int, out chan *bytes.Buffer) error {
-	bind := fmt.Sprintf("%s:%d", addr, port)
-	log.Printf("Listening on %s", bind)
-	l, err := net.Listen("tcp", bind)
-	if err != nil {
-		return err
-	}
-	defer l.Close()
+func listen(l net.Listener, out chan *bytes.Buffer) error {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
@@ -88,42 +82,70 @@ func connect(target string, worker int) net.Conn {
 	}
 }
 
-func transmit(worker int, outputChan chan *bytes.Buffer, target string) {
+func transmit(ctx context.Context, worker int, outputChan chan *bytes.Buffer, target string) {
 	var b *bytes.Buffer
 
 	var conn net.Conn
 	conn = connect(target, worker)
+	var exit bool
 
-	for b = range outputChan {
-		n, err := conn.Write(b.Bytes())
-		if err != nil || n == 0 {
-			log.Printf("Worker %d: Error writing: %v. n=%d, len=%d", worker, err, n, b.Len())
-			//requeue this message
-			outputChan <- b
-			//reconnect
-			conn.Close()
-			conn = connect(target, worker)
-			continue
-		}
-		//Message succesfully sent.. but...
-		//Only return small buffers to the pool
-		if b.Cap() <= 1024*1024 {
-			b.Reset()
-			bufPool.Put(b)
+	doneChan := ctx.Done()
+
+	for {
+		select {
+		case <-time.After(2 * time.Second):
+			if exit {
+				conn.Close()
+				return
+			}
+		case <-doneChan:
+			exit = true
+			doneChan = nil
+		case b = <-outputChan:
+			n, err := conn.Write(b.Bytes())
+			if err != nil || n == 0 {
+				log.Printf("Worker %d: Error writing: %v. n=%d, len=%d", worker, err, n, b.Len())
+				//requeue this message
+				outputChan <- b
+				//reconnect
+				conn.Close()
+				conn = connect(target, worker)
+				continue
+			}
+			//Message succesfully sent.. but...
+			//Only return small buffers to the pool
+			if b.Cap() <= 1024*1024 {
+				b.Reset()
+				bufPool.Put(b)
+			}
 		}
 	}
 }
-
-func proxy(addr string, port int, targets []string, connections int) {
+func proxy(ctx context.Context, l net.Listener, targets []string, connections int) error {
 	outputChan := make(chan *bytes.Buffer, connections*len(targets)*2)
 	for i := 0; i < connections*len(targets); i++ {
 		targetIdx := i % len(targets)
-		go transmit(i+1, outputChan, targets[targetIdx])
+		go transmit(ctx, i+1, outputChan, targets[targetIdx])
 	}
-	err := listen(addr, port, outputChan)
+	go func() {
+		<-ctx.Done()
+		l.Close()
+	}()
+	err := listen(l, outputChan)
+	return err
+}
+
+func listenAndProxy(addr string, port int, targets []string, connections int) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	bind := fmt.Sprintf("%s:%d", addr, port)
+	log.Printf("Listening on %s", bind)
+
+	l, err := net.Listen("tcp", bind)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
+	defer cancel()
+	return proxy(ctx, l, targets, connections)
 }
 
 func main() {
@@ -137,5 +159,8 @@ func main() {
 	flag.IntVar(&connections, "connections", 16, "Number of outbound connections to make to each target")
 	flag.Parse()
 	targets := strings.Split(target, ",")
-	proxy(addr, port, targets, connections)
+	err := listenAndProxy(addr, port, targets, connections)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
