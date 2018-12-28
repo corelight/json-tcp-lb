@@ -34,11 +34,11 @@ func listen(addr string, port int, out chan *bytes.Buffer) error {
 		if err != nil {
 			return err
 		}
-		go handleLog(conn, out)
+		go receive(conn, out)
 	}
 }
 
-func handleLog(conn net.Conn, out chan *bytes.Buffer) {
+func receive(conn net.Conn, out chan *bytes.Buffer) {
 	log.Printf("New connection from %s", conn.RemoteAddr())
 	defer conn.Close()
 
@@ -114,7 +114,7 @@ func transmit(worker int, outputChan chan *bytes.Buffer, target string) {
 	}
 }
 
-func receive(addr string, port int, targets []string, connections int) {
+func proxy(addr string, port int, targets []string, connections int) {
 	outputChan := make(chan *bytes.Buffer, connections*len(targets)*2)
 	for i := 0; i < connections*len(targets); i++ {
 		targetIdx := i % len(targets)
@@ -137,5 +137,5 @@ func main() {
 	flag.IntVar(&connections, "connections", 16, "Number of outbound connections to make to each target")
 	flag.Parse()
 	targets := strings.Split(target, ",")
-	receive(addr, port, targets, connections)
+	proxy(addr, port, targets, connections)
 }
