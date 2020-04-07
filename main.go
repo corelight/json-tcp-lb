@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -20,16 +23,6 @@ var bufPool = sync.Pool{
 		buf.Grow(bufferSize * 2)
 		return buf
 	},
-}
-
-func listen(l net.Listener, out chan *bytes.Buffer) error {
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			return err
-		}
-		go receive(conn, out)
-	}
 }
 
 func receive(conn net.Conn, out chan *bytes.Buffer) {
@@ -64,7 +57,7 @@ func receive(conn net.Conn, out chan *bytes.Buffer) {
 }
 
 //connect tries to connect to a target with exponential backoff
-func connect(target string, worker int) net.Conn {
+func connect(ctx context.Context, target string, worker int) net.Conn {
 	delay := 2 * time.Second
 	for {
 		//log.Printf("Worker %d: Opening connection to %v", worker, target)
@@ -79,6 +72,10 @@ func connect(target string, worker int) net.Conn {
 		if delay > 30*time.Second {
 			delay = 30 * time.Second
 		}
+		//The context is done
+		if ctx.Err() != nil {
+			return nil
+		}
 	}
 }
 
@@ -86,22 +83,34 @@ func transmit(ctx context.Context, worker int, outputChan chan *bytes.Buffer, ta
 	var b *bytes.Buffer
 
 	var conn net.Conn
-	conn = connect(target, worker)
+	conn = connect(ctx, target, worker)
+	//Only happens if we are exiting during startup
+	if conn == nil {
+		return
+	}
 	var exit bool
 
 	doneChan := ctx.Done()
 
+	idleCount := 0
+	timer := time.NewTicker(1 * time.Second)
+	defer timer.Stop()
+
 	for {
 		select {
-		case <-time.After(2 * time.Second):
-			if exit {
+		case <-timer.C:
+			idleCount++
+			//Exit if we are done and have not received any logs to write in 5 ticks.
+			if exit && idleCount >= 5 {
 				conn.Close()
 				return
 			}
 		case <-doneChan:
+			log.Printf("Worker %d: draining records and exiting...", worker)
 			exit = true
 			doneChan = nil
 		case b = <-outputChan:
+			idleCount = 0
 			n, err := conn.Write(b.Bytes())
 			if err != nil || n == 0 {
 				log.Printf("Worker %d: Error writing: %v. n=%d, len=%d", worker, err, n, b.Len())
@@ -109,7 +118,7 @@ func transmit(ctx context.Context, worker int, outputChan chan *bytes.Buffer, ta
 				outputChan <- b
 				//reconnect
 				conn.Close()
-				conn = connect(target, worker)
+				conn = connect(context.TODO(), target, worker)
 				continue
 			}
 			//Message succesfully sent.. but...
@@ -123,15 +132,30 @@ func transmit(ctx context.Context, worker int, outputChan chan *bytes.Buffer, ta
 }
 func proxy(ctx context.Context, l net.Listener, targets []string, connections int) error {
 	outputChan := make(chan *bytes.Buffer, connections*len(targets)*2)
+	var wg sync.WaitGroup
 	for i := 0; i < connections*len(targets); i++ {
-		targetIdx := i % len(targets)
-		go transmit(ctx, i+1, outputChan, targets[targetIdx])
+		wg.Add(1)
+		go func(idx int) {
+			targetIdx := idx % len(targets)
+			transmit(ctx, idx+1, outputChan, targets[targetIdx])
+			log.Printf("Worker %d done", idx+1)
+			wg.Done()
+		}(i)
 	}
 	go func() {
 		<-ctx.Done()
 		l.Close()
 	}()
-	err := listen(l, outputChan)
+	var err error
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			break
+		}
+		go receive(conn, outputChan)
+	}
+	//Wait for all workers to exit
+	wg.Wait()
 	return err
 }
 
@@ -145,6 +169,14 @@ func listenAndProxy(addr string, port int, targets []string, connections int) er
 		return err
 	}
 	defer cancel()
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigs
+		log.Printf("Received signal %s, exiting", sig)
+		cancel()
+	}()
+
 	return proxy(ctx, l, targets, connections)
 }
 
