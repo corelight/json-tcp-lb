@@ -117,7 +117,7 @@ func TestProxy(t *testing.T) {
 	defer pl.Close()
 	//
 
-	go proxy(ctx, pl, targets, 8)
+	go proxy(ctx, pl, targets, connections)
 
 	//Spew everything and then close the proxy listener
 	go func() {
