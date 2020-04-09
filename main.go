@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"os"
 	"os/signal"
@@ -56,36 +57,102 @@ func receive(conn net.Conn, out chan *bytes.Buffer) {
 	}
 }
 
+type Worker struct {
+	id            int
+	targets       []string //The list of all available targets
+	target        string   //The currently used target
+	targetIdx     int      //The index of the default target this worker should be using
+	conn          net.Conn
+	lastReconnect time.Time
+}
+
+func (w Worker) String() string {
+	return fmt.Sprintf("worker-%02d", w.id)
+}
+
+func (w Worker) isConnectedToPrimary() bool {
+	return w.target == w.targets[w.targetIdx]
+}
+
 //connect tries to connect to a target with exponential backoff
-func connect(ctx context.Context, target string, worker int) net.Conn {
+func (w *Worker) ConnectWithRetries(ctx context.Context) error {
+	rand.Seed(time.Now().UnixNano())
 	delay := 2 * time.Second
+	targetIdx := w.targetIdx //Leave the desired one alone
 	for {
-		//log.Printf("Worker %d: Opening connection to %v", worker, target)
-		conn, err := net.DialTimeout("tcp", target, 5*time.Second)
+		w.target = w.targets[targetIdx]
+		//log.Printf("Worker %d: Opening connection to %v", w.id, w.target)
+		conn, err := net.DialTimeout("tcp", w.target, 5*time.Second)
 		if err == nil {
-			log.Printf("Worker %d: connected to %s", worker, target)
-			return conn
+			log.Printf("Worker %d: connected to %s", w.id, w.target)
+			w.conn = conn
+			w.lastReconnect = time.Now()
+			return nil
 		}
-		log.Printf("Worker %d: Unable connect to %s: %v", worker, target, err)
+		log.Printf("Worker %d: Unable connect to %s: %v", w.id, w.target, err)
+		//The context is done
+		if ctx.Err() != nil {
+			return err
+		}
 		time.Sleep(delay)
 		delay *= 2
 		if delay > 30*time.Second {
 			delay = 30 * time.Second
 		}
-		//The context is done
-		if ctx.Err() != nil {
-			return nil
-		}
+		//After a failure, move onto a random target
+		targetIdx = rand.Intn(len(w.targets))
 	}
 }
 
-func transmit(ctx context.Context, worker int, outputChan chan *bytes.Buffer, target string) {
+func (w *Worker) ConnectIfNeeded(ctx context.Context) error {
+	if w.conn == nil {
+		return w.ConnectWithRetries(ctx)
+	}
+	//If not connected to the desired target, try reconnecting if it's been 5 minutes
+	if !w.isConnectedToPrimary() && time.Since(w.lastReconnect) > 5*time.Minute {
+		return w.ConnectWithRetries(ctx)
+	}
+	return nil
+}
+func (w *Worker) Close() {
+	if w.conn != nil {
+		w.conn.Close()
+		w.conn = nil
+	}
+}
+
+func (w *Worker) Reconnect(ctx context.Context) {
+	w.Close()
+	w.ConnectWithRetries(ctx)
+}
+func (w *Worker) Write(b []byte) (int, error) {
+	w.conn.SetDeadline(time.Now().Add(30 * time.Second))
+	n, err := w.conn.Write(b)
+	return n, err
+}
+func (w *Worker) WriteWithRetries(ctx context.Context, b []byte) (int, error) {
+	for {
+		w.ConnectIfNeeded(ctx)
+		n, err := w.Write(b)
+		if err == nil {
+			return n, err
+		}
+		log.Printf("Worker %d: Error writing to %s: %v. n=%d, len=%d", w.id, w.target, err, n, len(b))
+		w.Close()
+	}
+}
+
+func transmit(ctx context.Context, worker int, outputChan chan *bytes.Buffer, targets []string, target int) {
 	var b *bytes.Buffer
 
-	var conn net.Conn
-	conn = connect(ctx, target, worker)
+	w := &Worker{
+		id:        worker,
+		targets:   targets,
+		targetIdx: target,
+	}
+	err := w.ConnectWithRetries(ctx)
 	//Only happens if we are exiting during startup
-	if conn == nil {
+	if err != nil {
 		return
 	}
 	var exit bool
@@ -102,7 +169,7 @@ func transmit(ctx context.Context, worker int, outputChan chan *bytes.Buffer, ta
 			idleCount++
 			//Exit if we are done and have not received any logs to write in 5 ticks.
 			if exit && idleCount >= 5 {
-				conn.Close()
+				w.Close()
 				return
 			}
 		case <-doneChan:
@@ -111,16 +178,8 @@ func transmit(ctx context.Context, worker int, outputChan chan *bytes.Buffer, ta
 			doneChan = nil
 		case b = <-outputChan:
 			idleCount = 0
-			n, err := conn.Write(b.Bytes())
-			if err != nil || n == 0 {
-				log.Printf("Worker %d: Error writing: %v. n=%d, len=%d", worker, err, n, b.Len())
-				//requeue this message
-				outputChan <- b
-				//reconnect
-				conn.Close()
-				conn = connect(context.TODO(), target, worker)
-				continue
-			}
+			//This will retry forever and will not fail
+			w.WriteWithRetries(context.TODO(), b.Bytes())
 			//Message succesfully sent.. but...
 			//Only return small buffers to the pool
 			if b.Cap() <= 1024*1024 {
@@ -137,7 +196,7 @@ func proxy(ctx context.Context, l net.Listener, targets []string, connections in
 		wg.Add(1)
 		go func(idx int) {
 			targetIdx := idx % len(targets)
-			transmit(ctx, idx+1, outputChan, targets[targetIdx])
+			transmit(ctx, idx+1, outputChan, targets, targetIdx)
 			log.Printf("Worker %d done", idx+1)
 			wg.Done()
 		}(i)
