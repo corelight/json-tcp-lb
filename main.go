@@ -110,6 +110,7 @@ func (w *Worker) ConnectIfNeeded(ctx context.Context) error {
 	}
 	//If not connected to the desired target, try reconnecting if it's been 5 minutes
 	if !w.isConnectedToPrimary() && time.Since(w.lastReconnect) > 5*time.Minute {
+		log.Printf("Worker %d: attempting to reconnect to primary target", w.id)
 		return w.ConnectWithRetries(ctx)
 	}
 	return nil
