@@ -248,7 +248,7 @@ func main() {
 	flag.StringVar(&addr, "addr", "0.0.0.0", "Address to listen on")
 	flag.IntVar(&port, "port", 9000, "Port to listen on")
 	flag.StringVar(&target, "target", "127.0.0.1:9999", "Address to proxy to. separate multiple with comma")
-	flag.IntVar(&connections, "connections", 16, "Number of outbound connections to make to each target")
+	flag.IntVar(&connections, "connections", 4, "Number of outbound connections to make to each target")
 	flag.Parse()
 	targets := strings.Split(target, ",")
 	err := listenAndProxy(addr, port, targets, connections)
