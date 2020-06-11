@@ -1,6 +1,6 @@
-# json tcp proxy
+# json tcp lb
 
-This is a simple line based tcp proxy.  It is designed to work with newline
+This is a simple line based tcp load balancing proxy.  It is designed to work with newline
 delimited json, but will work with any line based protocol.
 
 This is different from a basic TCP proxy in that it will load balance data in a
@@ -23,7 +23,7 @@ single connection across multiple destinations.
 
 # Usage:
 
-    Usage of ./json_tcp_proxy:
+    Usage of ./json-tcp-lb:
       -addr string
             Address to listen on (default "0.0.0.0")
       -port int
