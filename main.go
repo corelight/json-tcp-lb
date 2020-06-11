@@ -36,7 +36,7 @@ func receive(conn net.Conn, out chan *bytes.Buffer) {
 	for {
 		n, err := conn.Read(buf)
 		if err != nil {
-			log.Printf("Error reading: %v", err)
+			log.Printf("Error reading from %s: %v", conn.RemoteAddr(), err)
 			break
 		}
 
