@@ -1,5 +1,9 @@
 # json tcp lb
 
+[![Docker Automated Build](https://img.shields.io/docker/cloud/automated/corelight/json-tcp-lb.svg)](https://cloud.docker.com/repository/docker/corelight/json-tcp-lb/builds)
+[![Docker Build Status](https://img.shields.io/docker/cloud/build/corelight/json-tcp-lb.svg)](https://cloud.docker.com/repository/docker/corelight/json-tcp-lb/builds)
+
+
 This is a simple line based tcp load balancing proxy.  It is designed to work with newline
 delimited json, but will work with any line based protocol.
 
