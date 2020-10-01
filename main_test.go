@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"testing"
@@ -20,7 +19,7 @@ func listenTestConnection(t *testing.T, l net.Listener, connections int) (int, e
 		if err != nil {
 			return 0, err
 		}
-		log.Printf("Accepted connection %d of %d", i+1, connections)
+		t.Logf("Accepted connection %d of %d", i+1, connections)
 		go handleTestConnection(t, conn, resultChan)
 	}
 	for i := 0; i < connections; i++ {
@@ -31,18 +30,18 @@ func listenTestConnection(t *testing.T, l net.Listener, connections int) (int, e
 
 func handleTestConnection(t *testing.T, conn net.Conn, resultChan chan int) {
 	var lines int
-	log.Printf("New connection from %s", conn.RemoteAddr())
+	t.Logf("New connection from %s", conn.RemoteAddr())
 	defer conn.Close()
 	buf := make([]byte, 4096)
 	for {
 		n, err := conn.Read(buf)
 		if err != nil {
-			log.Printf("Error reading: %v", err)
+			t.Logf("Error reading: %v", err)
 			break
 		}
 		lines += bytes.Count(buf[:n], []byte("\n"))
 	}
-	log.Printf("Connection got %d lines", lines)
+	t.Logf("Connection got %d lines", lines)
 	resultChan <- lines
 }
 
@@ -53,11 +52,11 @@ func spew(t *testing.T, port int, lines int) {
 	target := fmt.Sprintf("localhost:%d", port)
 	conn, err := net.DialTimeout("tcp", target, 5*time.Second)
 	if err != nil {
-		log.Printf("Unable to connect to %s: %v", target, err)
+		t.Logf("Unable to connect to %s: %v", target, err)
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	log.Printf("Spewing %d lines to port %d", lines, port)
+	t.Logf("Spewing %d lines to port %d", lines, port)
 	for i := 0; i < lines; i++ {
 		_, err := conn.Write(line)
 		if err != nil {
@@ -75,7 +74,7 @@ func TestDirect(t *testing.T) {
 		t.Fatal(err)
 	}
 	port := l.Addr().(*net.TCPAddr).Port
-	log.Printf("Listening for tests on %d", port)
+	t.Logf("Listening for tests on %d", port)
 	defer l.Close()
 	for i := 0; i < connections; i++ {
 		go spew(t, port, linesPerConnnection)
@@ -84,7 +83,7 @@ func TestDirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	log.Printf("Got %d lines total", lines)
+	t.Logf("Got %d lines total", lines)
 	if lines != expected {
 		t.Errorf("Expected %d lines, got %d", expected, lines)
 	}
@@ -101,7 +100,7 @@ func TestProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	port := l.Addr().(*net.TCPAddr).Port
-	log.Printf("Listening for tests on %d", port)
+	t.Logf("Listening for tests on %d", port)
 	defer l.Close()
 	target := fmt.Sprintf("localhost:%d", port)
 	targets := []string{target}
@@ -113,7 +112,7 @@ func TestProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	proxyPort := pl.Addr().(*net.TCPAddr).Port
-	log.Printf("Listening for proxy on %d", proxyPort)
+	t.Logf("Listening for proxy on %d", proxyPort)
 	defer pl.Close()
 	//
 
@@ -126,12 +125,12 @@ func TestProxy(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				spew(t, proxyPort, linesPerConnnection)
-				log.Printf("Spew done")
+				t.Logf("Spew done")
 				wg.Done()
 			}()
 		}
 		wg.Wait()
-		log.Printf("All spew done")
+		t.Logf("All spew done")
 		cancel()
 	}()
 
@@ -139,7 +138,7 @@ func TestProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	log.Printf("Got %d lines total", lines)
+	t.Logf("Got %d lines total", lines)
 	if lines != expected {
 		t.Errorf("Expected %d lines, got %d", expected, lines)
 	}
