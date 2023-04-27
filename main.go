@@ -74,7 +74,7 @@ func (w Worker) isConnectedToPrimary() bool {
 	return w.target == w.targets[w.targetIdx]
 }
 
-//connect tries to connect to a target with exponential backoff
+// ConnectWithRetries tries to connect to a target with exponential backoff
 func (w *Worker) ConnectWithRetries(ctx context.Context) error {
 	rand.Seed(time.Now().UnixNano())
 	delay := 2 * time.Second
@@ -84,6 +84,7 @@ func (w *Worker) ConnectWithRetries(ctx context.Context) error {
 		//log.Printf("Worker %d: Opening connection to %v", w.id, w.target)
 		conn, err := net.DialTimeout("tcp", w.target, 5*time.Second)
 		if err == nil {
+			w.Close()
 			log.Printf("Worker %d: connected to %s", w.id, w.target)
 			w.conn = conn
 			w.lastReconnect = time.Now()
