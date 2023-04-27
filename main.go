@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -36,7 +37,11 @@ func receive(conn net.Conn, out chan *bytes.Buffer) {
 	for {
 		n, err := conn.Read(buf)
 		if err != nil {
-			log.Printf("Error reading from %s: %v", conn.RemoteAddr(), err)
+			if errors.Is(err, net.ErrClosed) {
+				log.Printf("Closed inbound connection from %s", conn.RemoteAddr())
+			} else {
+				log.Printf("Error reading from %s: %v", conn.RemoteAddr(), err)
+			}
 			break
 		}
 
@@ -213,6 +218,10 @@ func proxy(ctx context.Context, l net.Listener, targets []string, connections in
 		if err != nil {
 			break
 		}
+		go func() {
+			<-ctx.Done()
+			conn.Close()
+		}()
 		go receive(conn, outputChan)
 	}
 	//Wait for all workers to exit
