@@ -131,6 +131,7 @@ func TestProxy(t *testing.T) {
 		}
 		wg.Wait()
 		t.Logf("All spew done")
+		time.Sleep(1 * time.Second)
 		cancel()
 	}()
 
