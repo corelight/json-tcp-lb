@@ -1,3 +1,3 @@
-module github.comcorelight/json-tcp-lb
+module github.com/corelight/json-tcp-lb
 
 go 1.16
