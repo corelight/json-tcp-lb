@@ -19,6 +19,13 @@ import (
 
 const bufferSize int = 16384
 
+type Config struct {
+	Port        int
+	Addr        string
+	Targets     []string
+	Connections int
+}
+
 var bufPool = sync.Pool{
 	New: func() interface{} {
 		buf := new(bytes.Buffer)
@@ -229,9 +236,9 @@ func proxy(ctx context.Context, l net.Listener, targets []string, connections in
 	return err
 }
 
-func listenAndProxy(addr string, port int, targets []string, connections int) error {
+func listenAndProxy(cfg Config) error {
 	ctx, cancel := context.WithCancel(context.Background())
-	bind := fmt.Sprintf("%s:%d", addr, port)
+	bind := fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port)
 	log.Printf("Listening on %s", bind)
 
 	l, err := net.Listen("tcp", bind)
@@ -247,21 +254,19 @@ func listenAndProxy(addr string, port int, targets []string, connections int) er
 		cancel()
 	}()
 
-	return proxy(ctx, l, targets, connections)
+	return proxy(ctx, l, cfg.Targets, cfg.Connections)
 }
 
 func main() {
-	var port int
-	var addr string
-	var target string
-	var connections int
-	flag.StringVar(&addr, "addr", "0.0.0.0", "Address to listen on")
-	flag.IntVar(&port, "port", 9000, "Port to listen on")
-	flag.StringVar(&target, "target", "127.0.0.1:9999", "Address to proxy to. separate multiple with comma")
-	flag.IntVar(&connections, "connections", 4, "Number of outbound connections to make to each target")
+	var cfg Config
+	var targets string
+	flag.StringVar(&cfg.Addr, "addr", "0.0.0.0", "Address to listen on")
+	flag.IntVar(&cfg.Port, "port", 9000, "Port to listen on")
+	flag.StringVar(&targets, "target", "127.0.0.1:9999", "Address to proxy to. separate multiple with comma")
+	flag.IntVar(&cfg.Connections, "connections", 4, "Number of outbound connections to make to each target")
 	flag.Parse()
-	targets := strings.Split(target, ",")
-	err := listenAndProxy(addr, port, targets, connections)
+	cfg.Targets = strings.Split(targets, ",")
+	err := listenAndProxy(cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
