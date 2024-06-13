@@ -203,14 +203,15 @@ func transmit(ctx context.Context, worker int, outputChan chan *bytes.Buffer, ta
 		}
 	}
 }
-func proxy(ctx context.Context, l net.Listener, targets []string, connections int) error {
-	outputChan := make(chan *bytes.Buffer, connections*len(targets)*2)
+func proxy(ctx context.Context, l net.Listener, cfg Config) error {
+	numTargets := len(cfg.Targets)
+	outputChan := make(chan *bytes.Buffer, cfg.Connections*numTargets*2)
 	var wg sync.WaitGroup
-	for i := 0; i < connections*len(targets); i++ {
+	for i := 0; i < cfg.Connections*numTargets; i++ {
 		wg.Add(1)
 		go func(idx int) {
-			targetIdx := idx % len(targets)
-			transmit(ctx, idx+1, outputChan, targets, targetIdx)
+			targetIdx := idx % numTargets
+			transmit(ctx, idx+1, outputChan, cfg.Targets, targetIdx)
 			log.Printf("Worker %d done", idx+1)
 			wg.Done()
 		}(i)
@@ -254,7 +255,7 @@ func listenAndProxy(cfg Config) error {
 		cancel()
 	}()
 
-	return proxy(ctx, l, cfg.Targets, cfg.Connections)
+	return proxy(ctx, l, cfg)
 }
 
 func main() {
