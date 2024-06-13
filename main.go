@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,6 +23,8 @@ const bufferSize int = 16384
 type Config struct {
 	Port        int
 	Addr        string
+	CertFile    string
+	KeyFile     string
 	Targets     []string
 	Connections int
 }
@@ -240,9 +243,23 @@ func proxy(ctx context.Context, l net.Listener, cfg Config) error {
 func listenAndProxy(cfg Config) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	bind := fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port)
-	log.Printf("Listening on %s", bind)
 
-	l, err := net.Listen("tcp", bind)
+	var l net.Listener
+	var err error
+
+	if cfg.CertFile == "" || cfg.KeyFile == "" {
+		log.Printf("Listening on %s", bind)
+		l, err = net.Listen("tcp", bind)
+	} else {
+		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		config := &tls.Config{Certificates: []tls.Certificate{cert}}
+
+		log.Printf("listening on %s using TLS", bind)
+		l, err = tls.Listen("tcp", bind, config)
+	}
 	if err != nil {
 		return err
 	}
@@ -265,6 +282,8 @@ func main() {
 	flag.IntVar(&cfg.Port, "port", 9000, "Port to listen on")
 	flag.StringVar(&targets, "target", "127.0.0.1:9999", "Address to proxy to. separate multiple with comma")
 	flag.IntVar(&cfg.Connections, "connections", 4, "Number of outbound connections to make to each target")
+	flag.StringVar(&cfg.CertFile, "tls-cert", "", "TLS Certificate PEM file.  Configuring this enables TLS")
+	flag.StringVar(&cfg.KeyFile, "tls-key", "", "TLS Certificate Key PEM file")
 	flag.Parse()
 	cfg.Targets = strings.Split(targets, ",")
 	err := listenAndProxy(cfg)
