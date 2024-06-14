@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -36,7 +37,9 @@ func handleTestConnection(t *testing.T, conn net.Conn, resultChan chan int) {
 	for {
 		n, err := conn.Read(buf)
 		if err != nil {
-			t.Logf("Error reading: %v", err)
+			if err != io.EOF {
+				t.Logf("Error reading: %v", err)
+			}
 			break
 		}
 		lines += bytes.Count(buf[:n], []byte("\n"))
@@ -94,6 +97,12 @@ func TestProxy(t *testing.T) {
 	linesPerConnnection := 10000
 	expected := connections * linesPerConnnection
 
+	cfg := Config{
+		Addr:        "",
+		Port:        0, //Select dynamically
+		Connections: connections,
+	}
+
 	// Setup downstream listener
 	l, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -103,27 +112,19 @@ func TestProxy(t *testing.T) {
 	t.Logf("Listening for tests on %d", port)
 	defer l.Close()
 	target := fmt.Sprintf("localhost:%d", port)
-	targets := []string{target}
+	cfg.Targets = []string{target}
 
 	// Setup proxy listener
 	ctx, cancel := context.WithCancel(context.Background())
-	pl, err := net.Listen("tcp", ":0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	pl, err := listen(cfg)
 	proxyPort := pl.Addr().(*net.TCPAddr).Port
 	t.Logf("Listening for proxy on %d", proxyPort)
 	defer pl.Close()
 	//
 
-	cfg := Config{
-		Targets:     targets,
-		Connections: connections,
-	}
-
 	go proxy(ctx, pl, cfg)
 
-	//Spew everything and then close the proxy listener
+	// Spew everything and then close the proxy listener
 	go func() {
 		var wg sync.WaitGroup
 		for i := 0; i < connections; i++ {

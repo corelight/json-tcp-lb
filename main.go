@@ -21,8 +21,8 @@ import (
 const bufferSize int = 16384
 
 type Config struct {
-	Port        int
 	Addr        string
+	Port        int
 	CertFile    string
 	KeyFile     string
 	Targets     []string
@@ -240,8 +240,7 @@ func proxy(ctx context.Context, l net.Listener, cfg Config) error {
 	return err
 }
 
-func listenAndProxy(cfg Config) error {
-	ctx, cancel := context.WithCancel(context.Background())
+func listen(cfg Config) (net.Listener, error) {
 	bind := fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port)
 
 	var l net.Listener
@@ -260,6 +259,15 @@ func listenAndProxy(cfg Config) error {
 		log.Printf("listening on %s using TLS", bind)
 		l, err = tls.Listen("tcp", bind, config)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return l, nil
+}
+
+func listenAndProxy(cfg Config) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	l, err := listen(cfg)
 	if err != nil {
 		return err
 	}
