@@ -44,6 +44,20 @@ var bufPool = sync.Pool{
 	},
 }
 
+// sleep returns nil after the specified duration or error if interrupted.
+// Modified slightly from
+// from https://stackoverflow.com/questions/55135239/how-can-i-sleep-with-responsive-context-cancelation
+func sleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	select {
+	case <-ctx.Done():
+		t.Stop()
+		return fmt.Errorf("Interrupted: %w", ctx.Err())
+	case <-t.C:
+	}
+	return nil
+}
+
 func receive(conn net.Conn, out chan *bytes.Buffer) {
 	log.Printf("New connection from %s", conn.RemoteAddr())
 	defer conn.Close()
@@ -132,7 +146,7 @@ func (w *Worker) ConnectWithRetries(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return err
 		}
-		time.Sleep(delay)
+		sleep(ctx, delay)
 		delay *= 2
 		if delay > 30*time.Second {
 			delay = 30 * time.Second
