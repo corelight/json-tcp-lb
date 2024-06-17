@@ -282,10 +282,7 @@ func listen(cfg Config) (net.Listener, error) {
 		log.Printf("listening on %s using TLS", bind)
 		l, err = tls.Listen("tcp", bind, config)
 	}
-	if err != nil {
-		return nil, err
-	}
-	return l, nil
+	return l, err
 }
 
 func listenAndProxy(cfg Config) error {
