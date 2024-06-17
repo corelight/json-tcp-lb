@@ -199,27 +199,33 @@ func testProxy(t *testing.T, cfg Config) {
 	cfg.Addr = ""
 	cfg.Port = 0 //Select dynamically
 
-	// Setup downstream listener
-	l, err := net.Listen("tcp", ":0")
+	// Setup downstream listener with matching TLS setting
+	var targetCfg Config
+	if cfg.TargetTLS {
+		cert, key := generateTestCerts(t)
+		targetCfg.CertFile = cert
+		targetCfg.KeyFile = key
+	}
+	targetListener, err := listen(targetCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := l.Addr().(*net.TCPAddr).Port
-	t.Logf("Listening for tests on %d", port)
-	defer l.Close()
+	port := targetListener.Addr().(*net.TCPAddr).Port
+	t.Logf("Target listening on %d", port)
+	defer targetListener.Close()
 	target := fmt.Sprintf("localhost:%d", port)
 	cfg.Targets = []string{target}
 
 	// Setup proxy listener
 	ctx, cancel := context.WithCancel(context.Background())
-	pl, err := listen(cfg)
-	proxyPort := pl.Addr().(*net.TCPAddr).Port
-	t.Logf("Listening for proxy on %d", proxyPort)
+	proxyListener, err := listen(cfg)
+	proxyPort := proxyListener.Addr().(*net.TCPAddr).Port
+	t.Logf("Proxy listening on %d", proxyPort)
 	cfg.Port = proxyPort
-	defer pl.Close()
+	defer proxyListener.Close()
 	//
 
-	go proxy(ctx, pl, cfg)
+	go proxy(ctx, proxyListener, cfg)
 
 	// Spew everything and then close the proxy listener
 	go func() {
@@ -242,7 +248,7 @@ func testProxy(t *testing.T, cfg Config) {
 		cancel()
 	}()
 
-	lines, err := listenTestConnection(t, l, connections)
+	lines, err := listenTestConnection(t, targetListener, connections)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,17 +258,40 @@ func testProxy(t *testing.T, cfg Config) {
 	}
 }
 
-func TestProxyPlainText(t *testing.T) {
+func TestProxyPlainPlain(t *testing.T) {
+	t.Parallel()
 	// All default settings
 	cfg := Config{}
 	testProxy(t, cfg)
 }
 
-func TestProxyTLS(t *testing.T) {
+func TestProxyTLSPlain(t *testing.T) {
+	t.Parallel()
 	cert, key := generateTestCerts(t)
 	cfg := Config{
 		CertFile: cert,
 		KeyFile:  key,
+	}
+	testProxy(t, cfg)
+}
+
+func TestProxyPlainTLS(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		TargetTLS:           true,
+		TargetTLSSkipVerify: true,
+	}
+	testProxy(t, cfg)
+}
+
+func TestProxyTLSTLS(t *testing.T) {
+	t.Parallel()
+	cert, key := generateTestCerts(t)
+	cfg := Config{
+		CertFile:            cert,
+		KeyFile:             key,
+		TargetTLS:           true,
+		TargetTLSSkipVerify: true,
 	}
 	testProxy(t, cfg)
 }
