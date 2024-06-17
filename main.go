@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,6 +19,22 @@ import (
 )
 
 const bufferSize int = 16384
+
+type Config struct {
+	// Basic Settings
+	Addr        string
+	Port        int
+	Connections int
+	Targets     []string
+
+	// Listen using TLS
+	CertFile string
+	KeyFile  string
+
+	// Connect using TLS
+	TargetTLS           bool
+	TargetTLSSkipVerify bool
+}
 
 var bufPool = sync.Pool{
 	New: func() interface{} {
@@ -69,6 +86,7 @@ type Worker struct {
 	targetIdx     int      //The index of the default target this worker should be using
 	conn          net.Conn
 	lastReconnect time.Time
+	cfg           Config
 }
 
 func (w Worker) String() string {
@@ -78,6 +96,20 @@ func (w Worker) String() string {
 func (w Worker) isConnectedToPrimary() bool {
 	return w.target == w.targets[w.targetIdx]
 }
+func (w *Worker) Connect(ctx context.Context, target string) (net.Conn, error) {
+	var conn net.Conn
+	var err error
+	if !w.cfg.TargetTLS {
+		conn, err = net.DialTimeout("tcp", target, 5*time.Second)
+	} else {
+		conf := &tls.Config{}
+		if w.cfg.TargetTLSSkipVerify {
+			conf.InsecureSkipVerify = true
+		}
+		conn, err = tls.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}, "tcp", target, conf)
+	}
+	return conn, err
+}
 
 // ConnectWithRetries tries to connect to a target with exponential backoff
 func (w *Worker) ConnectWithRetries(ctx context.Context) error {
@@ -86,8 +118,8 @@ func (w *Worker) ConnectWithRetries(ctx context.Context) error {
 	targetIdx := w.targetIdx //Leave the desired one alone
 	for {
 		w.target = w.targets[targetIdx]
+		conn, err := w.Connect(ctx, w.target)
 		//log.Printf("Worker %d: Opening connection to %v", w.id, w.target)
-		conn, err := net.DialTimeout("tcp", w.target, 5*time.Second)
 		if err == nil {
 			w.Close()
 			log.Printf("Worker %d: connected to %s", w.id, w.target)
@@ -149,10 +181,11 @@ func (w *Worker) WriteWithRetries(ctx context.Context, b []byte) (int, error) {
 	}
 }
 
-func transmit(ctx context.Context, worker int, outputChan chan *bytes.Buffer, targets []string, target int) {
+func transmit(ctx context.Context, cfg Config, worker int, outputChan chan *bytes.Buffer, targets []string, target int) {
 	var b *bytes.Buffer
 
 	w := &Worker{
+		cfg:       cfg,
 		id:        worker,
 		targets:   targets,
 		targetIdx: target,
@@ -196,14 +229,15 @@ func transmit(ctx context.Context, worker int, outputChan chan *bytes.Buffer, ta
 		}
 	}
 }
-func proxy(ctx context.Context, l net.Listener, targets []string, connections int) error {
-	outputChan := make(chan *bytes.Buffer, connections*len(targets)*2)
+func proxy(ctx context.Context, l net.Listener, cfg Config) error {
+	numTargets := len(cfg.Targets)
+	outputChan := make(chan *bytes.Buffer, cfg.Connections*numTargets*2)
 	var wg sync.WaitGroup
-	for i := 0; i < connections*len(targets); i++ {
+	for i := 0; i < cfg.Connections*numTargets; i++ {
 		wg.Add(1)
 		go func(idx int) {
-			targetIdx := idx % len(targets)
-			transmit(ctx, idx+1, outputChan, targets, targetIdx)
+			targetIdx := idx % numTargets
+			transmit(ctx, cfg, idx+1, outputChan, cfg.Targets, targetIdx)
 			log.Printf("Worker %d done", idx+1)
 			wg.Done()
 		}(i)
@@ -229,12 +263,31 @@ func proxy(ctx context.Context, l net.Listener, targets []string, connections in
 	return err
 }
 
-func listenAndProxy(addr string, port int, targets []string, connections int) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	bind := fmt.Sprintf("%s:%d", addr, port)
-	log.Printf("Listening on %s", bind)
+func listen(cfg Config) (net.Listener, error) {
+	bind := fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port)
 
-	l, err := net.Listen("tcp", bind)
+	var l net.Listener
+	var err error
+
+	if cfg.CertFile == "" || cfg.KeyFile == "" {
+		log.Printf("Listening on %s", bind)
+		l, err = net.Listen("tcp", bind)
+	} else {
+		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		config := &tls.Config{Certificates: []tls.Certificate{cert}}
+
+		log.Printf("listening on %s using TLS", bind)
+		l, err = tls.Listen("tcp", bind, config)
+	}
+	return l, err
+}
+
+func listenAndProxy(cfg Config) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	l, err := listen(cfg)
 	if err != nil {
 		return err
 	}
@@ -247,21 +300,23 @@ func listenAndProxy(addr string, port int, targets []string, connections int) er
 		cancel()
 	}()
 
-	return proxy(ctx, l, targets, connections)
+	return proxy(ctx, l, cfg)
 }
 
 func main() {
-	var port int
-	var addr string
-	var target string
-	var connections int
-	flag.StringVar(&addr, "addr", "0.0.0.0", "Address to listen on")
-	flag.IntVar(&port, "port", 9000, "Port to listen on")
-	flag.StringVar(&target, "target", "127.0.0.1:9999", "Address to proxy to. separate multiple with comma")
-	flag.IntVar(&connections, "connections", 4, "Number of outbound connections to make to each target")
+	var cfg Config
+	var targets string
+	flag.StringVar(&cfg.Addr, "addr", "0.0.0.0", "Address to listen on")
+	flag.IntVar(&cfg.Port, "port", 9000, "Port to listen on")
+	flag.StringVar(&targets, "target", "127.0.0.1:9999", "Address to proxy to. separate multiple with comma")
+	flag.BoolVar(&cfg.TargetTLS, "tls-target", false, "Connect to the targets using TLS")
+	flag.BoolVar(&cfg.TargetTLSSkipVerify, "tls-target-skip-verify", false, "Accepts any certificate presented by the target")
+	flag.IntVar(&cfg.Connections, "connections", 4, "Number of outbound connections to make to each target")
+	flag.StringVar(&cfg.CertFile, "tls-cert", "", "TLS Certificate PEM file.  Configuring this enables TLS")
+	flag.StringVar(&cfg.KeyFile, "tls-key", "", "TLS Certificate Key PEM file")
 	flag.Parse()
-	targets := strings.Split(target, ",")
-	err := listenAndProxy(addr, port, targets, connections)
+	cfg.Targets = strings.Split(targets, ",")
+	err := listenAndProxy(cfg)
 	if err != nil {
 		log.Fatal(err)
 	}

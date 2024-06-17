@@ -30,12 +30,28 @@ single connection across multiple destinations.
     Usage of ./json-tcp-lb:
       -addr string
             Address to listen on (default "0.0.0.0")
+      -connections int
+            Number of outbound connections to make to each target (default 4)
       -port int
             Port to listen on (default 9000)
       -target string
             Address to proxy to. separate multiple with comma (default "127.0.0.1:9999")
-      -connections int
-            Number of outbound connections to make to each target (default 4)
+      -tls-cert string
+            TLS Certificate PEM file.  Configuring this enables TLS
+      -tls-key string
+            TLS Certificate Key PEM file
+      -tls-target
+            Connect to the targets using TLS
+      -tls-target-skip-verify
+            Accepts any certificate presented by the target
+
+## TLS
+
+TLS can be used on the incoming connections or the outbound target connections, or both.
+
+To listen using TLS provide the `tls-cert` and `tls-key` options.
+
+To connect to targets using TLS toggle the `tls-target` option.
 
 ## Container Usage
 
