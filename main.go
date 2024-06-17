@@ -209,39 +209,18 @@ func transmit(ctx context.Context, cfg Config, worker int, outputChan chan *byte
 	if err != nil {
 		return
 	}
-	var exit bool
 
-	doneChan := ctx.Done()
-
-	idleCount := 0
-	timer := time.NewTicker(1 * time.Second)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-timer.C:
-			idleCount++
-			//Exit if we are done and have not received any logs to write in 5 ticks.
-			if exit && idleCount >= 5 {
-				w.Close()
-				return
-			}
-		case <-doneChan:
-			log.Printf("Worker %d: draining records and exiting...", worker)
-			exit = true
-			doneChan = nil
-		case b = <-outputChan:
-			idleCount = 0
-			//This will retry forever and will not fail
-			w.WriteWithRetries(context.TODO(), b.Bytes())
-			//Message succesfully sent.. but...
-			//Only return small buffers to the pool
-			if b.Cap() <= 1024*1024 {
-				b.Reset()
-				bufPool.Put(b)
-			}
+	for b = range outputChan {
+		//This will retry forever and will not fail
+		w.WriteWithRetries(context.TODO(), b.Bytes())
+		//Message succesfully sent.. but...
+		//Only return small buffers to the pool
+		if b.Cap() <= 1024*1024 {
+			b.Reset()
+			bufPool.Put(b)
 		}
 	}
+	w.Close()
 }
 func proxy(ctx context.Context, l net.Listener, cfg Config) error {
 	numTargets := len(cfg.Targets)
@@ -259,6 +238,8 @@ func proxy(ctx context.Context, l net.Listener, cfg Config) error {
 	go func() {
 		<-ctx.Done()
 		l.Close()
+		close(outputChan)
+
 	}()
 	var err error
 	for {
