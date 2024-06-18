@@ -96,8 +96,8 @@ func receive(conn net.Conn, out chan *bytes.Buffer) {
 type Worker struct {
 	id            int
 	targets       []string //The list of all available targets
-	target        string   //The currently used target
-	targetIdx     int      //The index of the default target this worker should be using
+	defaultTarget string   //The default target this worker should be using
+	curTarget     string   //The currently used target
 	conn          net.Conn
 	lastReconnect time.Time
 	cfg           Config
@@ -108,7 +108,7 @@ func (w Worker) String() string {
 }
 
 func (w Worker) isConnectedToPrimary() bool {
-	return w.target == w.targets[w.targetIdx]
+	return w.curTarget == w.defaultTarget
 }
 func (w *Worker) Connect(ctx context.Context, target string) (net.Conn, error) {
 	var conn net.Conn
@@ -129,19 +129,18 @@ func (w *Worker) Connect(ctx context.Context, target string) (net.Conn, error) {
 func (w *Worker) ConnectWithRetries(ctx context.Context) error {
 	rand.Seed(time.Now().UnixNano())
 	delay := 2 * time.Second
-	targetIdx := w.targetIdx //Leave the desired one alone
+	w.curTarget = w.defaultTarget
 	for {
-		w.target = w.targets[targetIdx]
-		conn, err := w.Connect(ctx, w.target)
+		conn, err := w.Connect(ctx, w.curTarget)
 		//log.Printf("Worker %d: Opening connection to %v", w.id, w.target)
 		if err == nil {
 			w.Close()
-			log.Printf("Worker %d: connected to %s", w.id, w.target)
+			log.Printf("Worker %d: connected to %s", w.id, w.curTarget)
 			w.conn = conn
 			w.lastReconnect = time.Now()
 			return nil
 		}
-		log.Printf("Worker %d: Unable connect to %s: %v", w.id, w.target, err)
+		log.Printf("Worker %d: Unable connect to %s: %v", w.id, w.curTarget, err)
 		//The context is done
 		if ctx.Err() != nil {
 			return err
@@ -152,7 +151,7 @@ func (w *Worker) ConnectWithRetries(ctx context.Context) error {
 			delay = 30 * time.Second
 		}
 		//After a failure, move onto a random target
-		targetIdx = rand.Intn(len(w.targets))
+		w.curTarget = w.targets[rand.Intn(len(w.targets))]
 	}
 }
 
@@ -161,7 +160,7 @@ func (w *Worker) ConnectIfNeeded(ctx context.Context) error {
 		return w.ConnectWithRetries(ctx)
 	}
 	//If not connected to the desired target, try reconnecting if it's been 5 minutes
-	if !w.isConnectedToPrimary() && time.Since(w.lastReconnect) > 5*time.Minute {
+	if !w.isConnectedToPrimary() && time.Since(w.lastReconnect) > 5*time.Second {
 		log.Printf("Worker %d: attempting to reconnect to primary target", w.id)
 		return w.ConnectWithRetries(ctx)
 	}
@@ -190,19 +189,19 @@ func (w *Worker) WriteWithRetries(ctx context.Context, b []byte) (int, error) {
 		if err == nil {
 			return n, err
 		}
-		log.Printf("Worker %d: Error writing to %s: %v. n=%d, len=%d", w.id, w.target, err, n, len(b))
+		log.Printf("Worker %d: Error writing to %s: %v. n=%d, len=%d", w.id, w.curTarget, err, n, len(b))
 		w.Close()
 	}
 }
 
-func transmit(ctx context.Context, cfg Config, worker int, outputChan chan *bytes.Buffer, targets []string, target int) {
+func transmit(ctx context.Context, cfg Config, worker int, outputChan chan *bytes.Buffer, target int) {
 	var b *bytes.Buffer
 
 	w := &Worker{
-		cfg:       cfg,
-		id:        worker,
-		targets:   targets,
-		targetIdx: target,
+		id:            worker,
+		cfg:           cfg,
+		targets:       cfg.Targets,
+		defaultTarget: cfg.Targets[target],
 	}
 	err := w.ConnectWithRetries(ctx)
 	//Only happens if we are exiting during startup
@@ -251,7 +250,7 @@ func proxy(ctx context.Context, l net.Listener, cfg Config) error {
 		wg.Add(1)
 		go func(idx int) {
 			targetIdx := idx % numTargets
-			transmit(ctx, cfg, idx+1, outputChan, cfg.Targets, targetIdx)
+			transmit(ctx, cfg, idx+1, outputChan, targetIdx)
 			log.Printf("Worker %d done", idx+1)
 			wg.Done()
 		}(i)
